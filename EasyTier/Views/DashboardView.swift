@@ -139,8 +139,7 @@ struct DashboardView<Manager: NetworkExtensionManagerProtocol>: View {
                 guard await closeSelectedSession() else { return }
                 try ProfileStore.save(profile, named: sanitizedName)
                 let session = try await ProfileStore.openSession(named: sanitizedName)
-                selectedSession.session = session
-                currentProfile = session.document.profile
+                try await activateSession(session)
             } catch {
                 dashboardLogger.error("create profile failed: \(error)")
                 errorMessage = .init(error.localizedDescription)
@@ -381,7 +380,6 @@ struct DashboardView<Manager: NetworkExtensionManagerProtocol>: View {
                     currentProfile = session.document.profile
                 } else if let lastSelected {
                     await loadProfile(lastSelected)
-                    await saveProfile()
                 }
             }
             // Register Darwin notification observer for tunnel errors
@@ -487,12 +485,28 @@ struct DashboardView<Manager: NetworkExtensionManagerProtocol>: View {
     }
     
     @MainActor
+    private func activateSession(_ session: ProfileSession) async throws {
+        do {
+            var profile = session.document.profile
+            let options = try NetworkExtensionManager.generateOptions(&profile)
+            session.document.profile = profile
+            try await session.save()
+            NetworkExtensionManager.saveOptions(options)
+            selectedSession.session = session
+            currentProfile = profile
+            lastSelected = session.name
+        } catch {
+            await session.close()
+            throw error
+        }
+    }
+
+    @MainActor
     private func loadProfile(_ named: String) async {
         guard await closeSelectedSession() else { return }
         do {
             let session = try await ProfileStore.openSession(named: named)
-            selectedSession.session = session
-            currentProfile = session.document.profile
+            try await activateSession(session)
         } catch {
             dashboardLogger.error("load profile failed: \(error)")
             if let conflict = error as? ProfileStoreError,
@@ -554,8 +568,7 @@ struct DashboardView<Manager: NetworkExtensionManagerProtocol>: View {
                 guard await closeSelectedSession() else { return }
                 try ProfileStore.save(profile, named: configName)
                 let session = try await ProfileStore.openSession(named: configName)
-                selectedSession.session = session
-                currentProfile = session.document.profile
+                try await activateSession(session)
             } catch {
                 dashboardLogger.error("import failed: \(error)")
                 errorMessage = .init(error.localizedDescription)
@@ -717,6 +730,10 @@ struct DashboardView<Manager: NetworkExtensionManagerProtocol>: View {
         }
         selectedSession.session = nil
         currentProfile = NetworkProfile()
+        lastSelected = nil
+        let defaults = UserDefaults(suiteName: APP_GROUP_ID)
+        defaults?.removeObject(forKey: "VPNConfig")
+        defaults?.synchronize()
         return true
     }
 
