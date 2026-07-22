@@ -1,0 +1,72 @@
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + iOS target
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+
+      - name: Install protobuf
+        run: brew install protobuf
+
+      - name: Build Rust Core (arm64)
+        run: |
+          source "$HOME/.cargo/env"
+          cd Core
+          cargo build --release --target aarch64-apple-ios
+
+      - name: Build Rust Core (simulator)
+        run: |
+          source "$HOME/.cargo/env"
+          cd Core
+          cargo build --release --target aarch64-apple-ios-sim
+
+      - name: Build Xcode project (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project EasyTier.xcodeproj \
+            -scheme EasyTier \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            -derivedDataPath build 2>&1 | tee xcodebuild.log
+
+      - name: Upload build log (if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH="build/Build/Products/Release-iphoneos/EasyTier.app"
+          PAYLOAD_DIR="build/Payload"
+          mkdir -p "$PAYLOAD_DIR"
+          cp -R "$APP_PATH" "$PAYLOAD_DIR/"
+          cd build
+          zip -r EasyTier-unsigned.ipa Payload/
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: EasyTier-unsigned-ipa
+          path: build/EasyTier-unsigned.ipa
